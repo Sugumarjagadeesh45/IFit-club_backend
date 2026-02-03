@@ -26,12 +26,6 @@ app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Add Ngrok skip warning header to all responses
-app.use((req, res, next) => {
-  res.setHeader('ngrok-skip-browser-warning', 'true');
-  next();
-});
-
 app.use('/api', limiter);
 
 // Import routes

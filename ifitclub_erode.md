@@ -37,16 +37,19 @@ This is a production-ready Node.js + Express backend for the iFit Club Erode mob
 | `GET` | `/api/athlete/:id/activities` | Get paginated activities. |
 | `POST` | `/api/athlete/:id/sync` | Trigger manual data sync. |
 
+## Production URL
+**Backend URL**: `https://ifit-club-backend.onrender.com`
+
 ## Environment Variables (.env)
 Ensure the following variables are set in your `.env` file:
 
 ```env
 PORT=5001
-NODE_ENV=development
-MONGO_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/ifit_club
+NODE_ENV=production
+MONGODB_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/ifit_club
 STRAVA_CLIENT_ID=your_client_id
 STRAVA_CLIENT_SECRET=your_client_secret
-STRAVA_REDIRECT_URI=https://your-backend-url/api/auth/strava/callback
+STRAVA_REDIRECT_URI=https://ifit-club-backend.onrender.com/api/auth/strava/callback
 JWT_SECRET=your_secure_jwt_secret
 ```
 
