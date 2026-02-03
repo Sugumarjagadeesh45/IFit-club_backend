@@ -9,6 +9,9 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
+// Trust proxy (for rate limiting behind reverse proxy)
+app.set('trust proxy', 1);
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -22,40 +25,44 @@ app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Add Ngrok skip warning header to all responses
+app.use((req, res, next) => {
+  res.setHeader('ngrok-skip-browser-warning', 'true');
+  next();
+});
+
 app.use('/api', limiter);
 
 // Import routes
-const authRoutes = require('./routes/authRoutes');
 const stravaRoutes = require('./routes/stravaRoutes');
-const userRoutes = require('./routes/userRoutes');
 
 // Log route registration
 console.log('🔧 Registering routes...');
-console.log('   /api/auth');
-console.log('   /api/strava');
-console.log('   /api/users');
+console.log('   GET  /api/auth/strava');
+console.log('   GET  /api/auth/strava/callback');
+console.log('   GET  /api/athlete/:athleteId/profile');
+console.log('   GET  /api/athlete/:athleteId/activities');
+console.log('   GET  /api/athlete/:athleteId/stats');
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/strava', stravaRoutes);
-app.use('/api/users', userRoutes);
+// Routes - Mount strava routes at /api root
+app.use('/api', stravaRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    message: 'Server is running',
+  res.status(200).json({
+    status: 'OK',
+    message: 'iFit Club Backend is running',
     timestamp: new Date().toISOString(),
     endpoints: [
-      'POST /api/auth/register',
-      'POST /api/auth/login',
-      'GET  /api/auth/profile',
-      'POST /api/strava/connect',
-      'GET  /api/strava/user',
-      'POST /api/strava/sync',
-      'GET  /api/users/profile',
-      'PUT  /api/users/profile',
-      'GET  /api/health'
+      'GET  /api/auth/strava                    - Redirect to Strava OAuth',
+      'GET  /api/auth/strava/callback           - OAuth callback handler',
+      'GET  /api/athlete/:athleteId/profile     - Get athlete profile',
+      'GET  /api/athlete/:athleteId/activities  - Get all activities',
+      'GET  /api/athlete/:athleteId/stats       - Get activity statistics',
+      'POST /api/athlete/:athleteId/sync        - Sync latest data',
+      'GET  /api/athlete/:athleteId/sync-history - Get sync history',
+      'DELETE /api/athlete/:athleteId/disconnect - Disconnect Strava'
     ]
   });
 });
@@ -65,19 +72,9 @@ app.get('/', (req, res) => {
   res.json({
     message: '🚴 Welcome to iFit Club API',
     version: '1.0.0',
-    endpoints: '/api/health',
-    documentation: 'All API endpoints require /api prefix'
-  });
-});
-
-// Test all routes
-app.get('/api/test', (req, res) => {
-  res.json({
-    routes: {
-      auth: ['/register', '/login', '/profile'],
-      strava: ['/connect', '/user', '/sync'],
-      users: ['/profile']
-    }
+    documentation: 'Strava-only authentication. Click "Connect with Strava" to begin.',
+    authEndpoint: '/api/auth/strava',
+    healthCheck: '/api/health'
   });
 });
 
@@ -94,15 +91,14 @@ app.use((req, res) => {
     availableRoutes: [
       'GET  /',
       'GET  /api/health',
-      'GET  /api/test',
-      'POST /api/auth/register',
-      'POST /api/auth/login',
-      'GET  /api/auth/profile',
-      'POST /api/strava/connect',
-      'GET  /api/strava/user',
-      'POST /api/strava/sync',
-      'GET  /api/users/profile',
-      'PUT  /api/users/profile'
+      'GET  /api/auth/strava',
+      'GET  /api/auth/strava/callback',
+      'GET  /api/athlete/:athleteId/profile',
+      'GET  /api/athlete/:athleteId/activities',
+      'GET  /api/athlete/:athleteId/stats',
+      'POST /api/athlete/:athleteId/sync',
+      'GET  /api/athlete/:athleteId/sync-history',
+      'DELETE /api/athlete/:athleteId/disconnect'
     ]
   });
 });
