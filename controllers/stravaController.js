@@ -61,7 +61,7 @@ exports.redirectToStrava = (req, res) => {
   res.redirect(authUrl);
 };
 
-// Handle Strava OAuth callback
+// Handle Strava OAuth callback - FAST redirect, background sync
 exports.handleCallback = async (req, res) => {
   try {
     const { code, error } = req.query;
@@ -75,99 +75,122 @@ exports.handleCallback = async (req, res) => {
       return res.send(getRedirectHtml(`ifitclub://auth-error?message=${encodeURIComponent('Authorization code not provided')}`));
     }
 
+    console.log('🔄 Exchanging code for tokens...');
+
     // Exchange code for tokens
     const tokenData = await stravaService.exchangeCodeForTokens(code);
     const { accessToken, refreshToken, expiresAt, athlete } = tokenData;
 
-    // Create sync log
-    const syncLog = new SyncLog({
-      athleteId: athlete.id,
-      syncType: 'full',
-      status: 'started'
+    console.log('✅ Token received for athlete:', athlete.id);
+
+    // Save or update athlete (FAST - just profile data from token response)
+    await Athlete.findOneAndUpdate(
+      { stravaId: athlete.id },
+      {
+        stravaId: athlete.id,
+        username: athlete.username,
+        firstName: athlete.firstname,
+        lastName: athlete.lastname,
+        profileMedium: athlete.profile_medium,
+        profile: athlete.profile,
+        city: athlete.city,
+        state: athlete.state,
+        country: athlete.country,
+        gender: athlete.sex,
+        weight: athlete.weight,
+        followerCount: athlete.follower_count,
+        friendCount: athlete.friend_count,
+        premium: athlete.premium,
+        summit: athlete.summit,
+        stravaCreatedAt: athlete.created_at ? new Date(athlete.created_at) : null,
+        stravaUpdatedAt: athlete.updated_at ? new Date(athlete.updated_at) : null
+      },
+      { upsert: true, new: true }
+    );
+
+    console.log('✅ Athlete saved');
+
+    // Save or update OAuth token (FAST)
+    await OAuthToken.findOneAndUpdate(
+      { athleteId: athlete.id },
+      {
+        athleteId: athlete.id,
+        accessToken,
+        refreshToken,
+        expiresAt
+      },
+      { upsert: true, new: true }
+    );
+
+    console.log('✅ OAuth tokens saved');
+
+    // Generate JWT token for the athlete
+    const jwtToken = generateToken(athlete.id);
+
+    console.log('✅ JWT generated');
+    console.log('🔗 Redirecting to mobile app IMMEDIATELY...');
+
+    // REDIRECT IMMEDIATELY - Don't wait for activities sync!
+    const deepLinkUrl = `ifitclub://auth-success?athleteId=${athlete.id}&token=${jwtToken}&firstName=${encodeURIComponent(athlete.firstname || '')}&lastName=${encodeURIComponent(athlete.lastname || '')}&profile=${encodeURIComponent(athlete.profile || '')}`;
+
+    // Send redirect response FIRST
+    res.send(getRedirectHtml(deepLinkUrl));
+
+    // THEN sync activities in background (non-blocking)
+    console.log('🔄 Starting background sync for activities and stats...');
+    syncActivitiesInBackground(athlete.id, accessToken).catch(err => {
+      console.error('❌ Background sync error:', err.message);
     });
-    await syncLog.save();
-
-    try {
-      // Save or update athlete
-      const athleteDoc = await Athlete.findOneAndUpdate(
-        { stravaId: athlete.id },
-        {
-          stravaId: athlete.id,
-          username: athlete.username,
-          firstName: athlete.firstname,
-          lastName: athlete.lastname,
-          profileMedium: athlete.profile_medium,
-          profile: athlete.profile,
-          city: athlete.city,
-          state: athlete.state,
-          country: athlete.country,
-          gender: athlete.sex,
-          weight: athlete.weight,
-          followerCount: athlete.follower_count,
-          friendCount: athlete.friend_count,
-          premium: athlete.premium,
-          summit: athlete.summit,
-          stravaCreatedAt: athlete.created_at ? new Date(athlete.created_at) : null,
-          stravaUpdatedAt: athlete.updated_at ? new Date(athlete.updated_at) : null
-        },
-        { upsert: true, new: true }
-      );
-
-      // Save or update OAuth token
-      await OAuthToken.findOneAndUpdate(
-        { athleteId: athlete.id },
-        {
-          athleteId: athlete.id,
-          accessToken,
-          refreshToken,
-          expiresAt
-        },
-        { upsert: true, new: true }
-      );
-
-      // Fetch and save athlete stats
-      const statsData = await stravaService.getAthleteStats(accessToken, athlete.id);
-      await saveAthleteStats(athlete.id, statsData);
-
-      // Fetch and save all activities
-      const activitiesResult = await fetchAndSaveAllActivities(athlete.id, accessToken);
-
-      // Update sync log
-      syncLog.status = 'completed';
-      syncLog.activitiesSynced = activitiesResult.total;
-      syncLog.newActivities = activitiesResult.new;
-      syncLog.updatedActivities = activitiesResult.updated;
-      syncLog.completedAt = new Date();
-      await syncLog.save();
-
-      // Generate JWT token for the athlete
-      const jwtToken = generateToken(athlete.id);
-
-      console.log('✅ OAuth success! Athlete ID:', athlete.id);
-      console.log('📊 Activities synced:', activitiesResult.total);
-      console.log('🔗 Redirecting to mobile app...');
-
-      // DIRECT REDIRECT to mobile deep link - NO HTML pages
-      const deepLinkUrl = `ifitclub://auth-success?athleteId=${athlete.id}&token=${jwtToken}&activitiesSynced=${activitiesResult.total}`;
-
-      res.send(getRedirectHtml(deepLinkUrl));
-
-    } catch (syncError) {
-      syncLog.status = 'failed';
-      syncLog.errorMessage = syncError.message;
-      syncLog.completedAt = new Date();
-      await syncLog.save();
-      throw syncError;
-    }
 
   } catch (error) {
     console.error('❌ Strava callback error:', error);
-
-    // DIRECT REDIRECT to mobile deep link with error - NO HTML pages
     const errorDeepLink = `ifitclub://auth-error?message=${encodeURIComponent(error.message)}`;
     res.send(getRedirectHtml(errorDeepLink));
   }
 };
+
+// Background sync function (runs after redirect)
+async function syncActivitiesInBackground(athleteId, accessToken) {
+  const syncLog = new SyncLog({
+    athleteId: athleteId,
+    syncType: 'full',
+    status: 'started'
+  });
+  await syncLog.save();
+
+  try {
+    console.log('📊 Fetching stats for athlete:', athleteId);
+
+    // Fetch and save athlete stats
+    const statsData = await stravaService.getAthleteStats(accessToken, athleteId);
+    await saveAthleteStats(athleteId, statsData);
+    console.log('✅ Stats saved');
+
+    // Fetch and save all activities
+    console.log('📥 Fetching activities (this may take a while)...');
+    const activitiesResult = await fetchAndSaveAllActivities(athleteId, accessToken);
+
+    // Update sync log
+    syncLog.status = 'completed';
+    syncLog.activitiesSynced = activitiesResult.total;
+    syncLog.newActivities = activitiesResult.new;
+    syncLog.updatedActivities = activitiesResult.updated;
+    syncLog.completedAt = new Date();
+    await syncLog.save();
+
+    console.log('✅ Background sync complete!');
+    console.log('📊 Total activities synced:', activitiesResult.total);
+    console.log('🆕 New:', activitiesResult.new);
+    console.log('🔄 Updated:', activitiesResult.updated);
+
+  } catch (syncError) {
+    console.error('❌ Background sync failed:', syncError.message);
+    syncLog.status = 'failed';
+    syncLog.errorMessage = syncError.message;
+    syncLog.completedAt = new Date();
+    await syncLog.save();
+  }
+}
 
 // Get athlete profile
 exports.getAthleteProfile = async (req, res) => {
